@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- ─── Meta ──────────────────────────────────────────── -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Bublo — Your Agentic AI Assistant</title>
+  <meta name="description" content="Bublo is an agentic AI assistant with real-time reasoning, multi-step task execution, and intelligent tools. Ask anything — Bublo thinks, plans, and delivers." />
+  <meta name="author" content="Sumit Dabas" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Bublo — Your Agentic AI Assistant" />
+  <meta property="og:description" content="An AI that doesn't just chat — it thinks, reasons, and acts. Try Bublo, the next-gen agentic AI assistant." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://chat.sumitdabas.in" />
+
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════
+       APP WRAPPER — Centers the chat on desktop
+       ═══════════════════════════════════════════════════════ -->
+  <div class="app-wrapper">
+    <main class="chat-app" id="chat-app">
+
+      <!-- ── Header ──────────────────────────────────────── -->
+      <header class="chat-header" id="chat-header">
+        <div class="header-left">
+          <div class="header-avatar" aria-hidden="true">B</div>
+          <div class="header-info">
+            <h1>Bublo — Agentic AI Assistant</h1>
+            <div class="header-status">
+              <span class="status-dot"></span>
+              <span id="status-text">Online</span>
+            </div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="header-btn" id="btn-clear" aria-label="Clear chat" title="Clear chat">
+            🗑️
+          </button>
+          <button class="header-btn" id="btn-info" aria-label="Info" title="About Bublo">
+            ℹ️
+          </button>
+        </div>
+      </header>
+
+      <!-- ── Chat Messages ───────────────────────────────── -->
+      <div class="chat-messages" id="chat-messages">
+
+        <!-- Welcome Screen (shown when no messages) -->
+        <div class="welcome-screen" id="welcome-screen">
+          <div class="welcome-icon" aria-hidden="true">🤖</div>
+          <h2>Welcome to Bublo</h2>
+          <p>
+            Your agentic AI assistant. I don't just answer — I think, 
+            reason, and act. Ask me anything or try a prompt below.
+          </p>
+          <div class="welcome-suggestions">
+            <button class="suggestion-chip" data-message="Explain agentic AI in simple terms">
+              🧠 Explain agentic AI
+            </button>
+            <button class="suggestion-chip" data-message="Help me brainstorm a startup idea">
+              💡 Brainstorm ideas
+            </button>
+            <button class="suggestion-chip" data-message="Write a Python function to parse JSON from a URL">
+              🐍 Write code
+            </button>
+            <button class="suggestion-chip" data-message="What can you do?">
+              ⚡ Your capabilities
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Input Area ──────────────────────────────────── -->
+      <div class="chat-input-area" id="chat-input-area">
+        <div class="input-wrapper">
+          <textarea
+            id="chat-input"
+            placeholder="Ask Bublo anything..."
+            rows="1"
+            aria-label="Chat message input"
+          ></textarea>
+          <button class="send-btn" id="send-btn" aria-label="Send message" disabled>
+            <svg viewBox="0 0 24 24">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
+        <div class="powered-by">
+          Built by <a href="https://sumitdabas.in" target="_blank" rel="noopener">Sumit Dabas</a> · Agentic AI Platform
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ── JavaScript ──────────────────────────────────────── -->
+  <script src="js/app.js"></script>
+
+</body>
+</html>
