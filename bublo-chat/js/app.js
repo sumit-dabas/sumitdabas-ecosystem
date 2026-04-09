@@ -21,13 +21,13 @@
 
 /* ── DOM References ───────────────────────────────────────── */
 const DOM = {
-  chatMessages:  document.getElementById('chat-messages'),
-  chatInput:     document.getElementById('chat-input'),
-  sendBtn:       document.getElementById('send-btn'),
+  chatMessages: document.getElementById('chat-messages'),
+  chatInput: document.getElementById('chat-input'),
+  sendBtn: document.getElementById('send-btn'),
   welcomeScreen: document.getElementById('welcome-screen'),
-  statusText:    document.getElementById('status-text'),
-  clearBtn:      document.getElementById('btn-clear'),
-  infoBtn:       document.getElementById('btn-info'),
+  statusText: document.getElementById('status-text'),
+  clearBtn: document.getElementById('btn-clear'),
+  infoBtn: document.getElementById('btn-info'),
 };
 
 /* ── Configuration ────────────────────────────────────────── */
@@ -40,7 +40,7 @@ const CONFIG = {
    * And return JSON with:
    *   { "reply": "<bot's reply>" }
    */
-  webhookUrl: 'https://your-n8n-instance.app.n8n.cloud/webhook/bublo',
+  webhookUrl: 'https://n8n.sumitdabas.in/webhook/58f54309-8118-4294-8f63-51cd0c9ba873/chat',
 
   /** Typing indicator delay range (ms) — for simulation fallback */
   typingDelayMin: 800,
