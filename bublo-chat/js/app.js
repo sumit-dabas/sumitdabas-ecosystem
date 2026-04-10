@@ -1,23 +1,27 @@
 /**
  * ============================================================
- *  BUBLO — Agentic AI Assistant  ·  Chat Application Logic
+ * BUBLO — Agentic AI Assistant  ·  Chat Application Logic
  * ============================================================
  *
- *  Modular Vanilla JS powering the Bublo chat interface.
- *  Features:
- *    ✦  Send/receive messages with animated bubbles
- *    ✦  CSS-only typing indicator
- *    ✦  Auto-scroll to latest message
- *    ✦  Auto-resize textarea
- *    ✦  Welcome screen with suggestion chips
- *    ✦  Clear chat action
- *    ✦  Placeholder fetch() ready for n8n webhook
+ * Modular Vanilla JS powering the Bublo chat interface.
+ * Features:
+ * ✦  Send/receive messages with animated bubbles
+ * ✦  CSS-only typing indicator
+ * ✦  Auto-scroll to latest message
+ * ✦  Auto-resize textarea
+ * ✦  Welcome screen with suggestion chips
+ * ✦  Clear chat action
+ * ✦  Placeholder fetch() ready for n8n webhook
+ * ✦  Unique Session ID generation for memory management
  *
- *  Author:  Sumit Dabas
+ * Author:  Sumit Dabas
  * ============================================================
  */
 
 'use strict';
+
+// Generates a secure, unique ID for the user's session (e.g., "3b12f1df-5232-4d8b...")
+const currentSessionId = crypto.randomUUID();
 
 /* ── DOM References ───────────────────────────────────────── */
 const DOM = {
@@ -34,11 +38,6 @@ const DOM = {
 const CONFIG = {
   /**
    * 🔌 N8N WEBHOOK ENDPOINT
-   * Replace this URL with your actual n8n webhook URL.
-   * The webhook should accept POST requests with:
-   *   { "message": "<user's message>" }
-   * And return JSON with:
-   *   { "reply": "<bot's reply>" }
    */
   webhookUrl: 'https://n8n.sumitdabas.in/webhook/58f54309-8118-4294-8f63-51cd0c9ba873/chat',
 
@@ -195,10 +194,6 @@ function removeTypingIndicator(indicator) {
 /**
  * Sends the user's message to the n8n webhook and returns the reply.
  *
- * 🔌  INTEGRATION POINT
- *     Modify the request body and response parsing to match
- *     your n8n webhook's expected format.
- *
  * @param {string} userMessage — The user's message text
  * @returns {Promise<string>} — The bot's reply text
  */
@@ -207,7 +202,10 @@ async function fetchBotReply(userMessage) {
     const response = await fetch(CONFIG.webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: userMessage }),
+      body: JSON.stringify({ 
+        sessionId: currentSessionId, // <-- The unique ID is now sent!
+        message: userMessage         // <-- The chat text
+      }),
     });
 
     if (!response.ok) {
@@ -216,24 +214,10 @@ async function fetchBotReply(userMessage) {
 
     const data = await response.json();
 
-    /*
-     * 📝 RESPONSE PARSING
-     * Adjust the property name below to match your webhook's
-     * response structure. Common patterns:
-     *   data.reply
-     *   data.output
-     *   data.response
-     *   data.text
-     */
     return data.reply || data.output || data.response || data.text || 'I received your message, but got an unexpected response format.';
 
   } catch (error) {
     console.error('[Bublo] Fetch error:', error);
-
-    /*
-     * Fallback: If the webhook isn't configured yet,
-     * return a helpful message instead of crashing.
-     */
     return `👋 Hey there! I'm Bublo, your agentic AI assistant. My backend is being configured right now — once live, I'll be able to reason through complex tasks, write code, brainstorm ideas, and much more.\n\nHang tight — exciting capabilities are on the way!`;
   }
 }
@@ -247,13 +231,7 @@ async function fetchBotReply(userMessage) {
 let isSending = false;
 
 /**
- * Main send handler:
- *  1. Reads & trims input
- *  2. Appends user message
- *  3. Shows typing indicator
- *  4. Calls the webhook
- *  5. Appends bot reply
- *  6. Cleans up
+ * Main send handler
  */
 async function handleSend() {
   const text = DOM.chatInput.value.trim();
