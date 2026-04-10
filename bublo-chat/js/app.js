@@ -202,7 +202,7 @@ async function fetchBotReply(userMessage) {
     const response = await fetch(CONFIG.webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         sessionId: currentSessionId, // <-- The unique ID is now sent!
         message: userMessage         // <-- The chat text
       }),
