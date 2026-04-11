@@ -1,37 +1,38 @@
 /**
  * ============================================================
- * BUBLO — Agentic AI Assistant  ·  Chat Application Logic
+ *  BUBLO — Agentic AI Assistant  ·  Chat Application Logic
  * ============================================================
  *
- * Modular Vanilla JS powering the Bublo chat interface.
- * Features:
- * ✦  Send/receive messages with animated bubbles
- * ✦  CSS-only typing indicator
- * ✦  Auto-scroll to latest message
- * ✦  Auto-resize textarea
- * ✦  Welcome screen with suggestion chips
- * ✦  Clear chat action
- * ✦  Placeholder fetch() ready for n8n webhook
- * ✦  Unique Session ID generation for memory management
+ *  Modular Vanilla JS powering the Bublo chat interface.
+ *  Features:
+ *    ✦  Send/receive messages with animated bubbles
+ *    ✦  CSS-only typing indicator with elapsed timer
+ *    ✦  Streaming support (SSE / ReadableStream / long-poll)
+ *    ✦  10-minute AbortController timeout (ARM CPU safe)
+ *    ✦  Auto-scroll to latest message
+ *    ✦  Auto-resize textarea
+ *    ✦  Welcome screen with suggestion chips
+ *    ✦  Clear chat action
+ *    ✦  Unique Session ID generation for memory management
  *
- * Author:  Sumit Dabas
+ *  Author:  Sumit Dabas
  * ============================================================
  */
 
 'use strict';
 
-// Generates a secure, unique ID for the user's session (e.g., "3b12f1df-5232-4d8b...")
+// Generates a secure, unique ID for the user's session
 const currentSessionId = crypto.randomUUID();
 
 /* ── DOM References ───────────────────────────────────────── */
 const DOM = {
-  chatMessages: document.getElementById('chat-messages'),
-  chatInput: document.getElementById('chat-input'),
-  sendBtn: document.getElementById('send-btn'),
+  chatMessages:  document.getElementById('chat-messages'),
+  chatInput:     document.getElementById('chat-input'),
+  sendBtn:       document.getElementById('send-btn'),
   welcomeScreen: document.getElementById('welcome-screen'),
-  statusText: document.getElementById('status-text'),
-  clearBtn: document.getElementById('btn-clear'),
-  infoBtn: document.getElementById('btn-info'),
+  statusText:    document.getElementById('status-text'),
+  clearBtn:      document.getElementById('btn-clear'),
+  infoBtn:       document.getElementById('btn-info'),
 };
 
 /* ── Configuration ────────────────────────────────────────── */
@@ -41,9 +42,13 @@ const CONFIG = {
    */
   webhookUrl: 'https://n8n.sumitdabas.in/webhook/58f54309-8118-4294-8f63-51cd0c9ba873/chat',
 
-  /** Typing indicator delay range (ms) — for simulation fallback */
-  typingDelayMin: 800,
-  typingDelayMax: 2000,
+  /**
+   * ⏱️  TIMEOUT — 20 minutes (1,200,000ms)
+   * The Qwen 9B model on ARM CPU can take up to 20 minutes
+   * on the very first cold-start call. Subsequent calls are
+   * much faster, but we must not kill the first one.
+   */
+  fetchTimeoutMs: 1_200_000,
 
   /** Maximum textarea height before scrolling */
   maxInputHeight: 120,
@@ -88,23 +93,29 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+/**
+ * Formats seconds into a human-readable elapsed string.
+ * @param {number} seconds
+ * @returns {string} e.g. "45s", "1m 12s", "3m 5s"
+ */
+function formatElapsed(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
+
 
 /* ══════════════════════════════════════════════════════════════
    WELCOME SCREEN
    ══════════════════════════════════════════════════════════════ */
 
-/**
- * Hides the welcome screen when the first message is sent.
- */
 function hideWelcomeScreen() {
   if (DOM.welcomeScreen) {
     DOM.welcomeScreen.style.display = 'none';
   }
 }
 
-/**
- * Shows the welcome screen (used when chat is cleared).
- */
 function showWelcomeScreen() {
   if (DOM.welcomeScreen) {
     DOM.welcomeScreen.style.display = '';
@@ -118,9 +129,9 @@ function showWelcomeScreen() {
 
 /**
  * Creates and appends a message bubble to the chat area.
- *
- * @param {'user'|'bot'} sender — Who sent the message
- * @param {string} text — The message text
+ * @param {'user'|'bot'} sender
+ * @param {string} text — The message text (HTML-escaped internally)
+ * @returns {HTMLElement} — The message-bubble inner element
  */
 function appendMessage(sender, text) {
   hideWelcomeScreen();
@@ -141,15 +152,47 @@ function appendMessage(sender, text) {
 
   DOM.chatMessages.appendChild(message);
   scrollToBottom();
+
+  return message.querySelector('.message-bubble');
+}
+
+/**
+ * Creates an empty bot message bubble for streaming text into.
+ * @returns {{ messageEl: HTMLElement, bubbleEl: HTMLElement }}
+ */
+function createStreamingBotMessage() {
+  hideWelcomeScreen();
+
+  const message = document.createElement('div');
+  message.classList.add('message', 'bot');
+
+  message.innerHTML = `
+    <div class="message-avatar">B</div>
+    <div class="message-content">
+      <div class="message-bubble streaming-bubble"></div>
+      <span class="message-time">${getTimestamp()}</span>
+    </div>
+  `;
+
+  DOM.chatMessages.appendChild(message);
+  scrollToBottom();
+
+  return {
+    messageEl: message,
+    bubbleEl: message.querySelector('.message-bubble'),
+  };
 }
 
 
 /* ══════════════════════════════════════════════════════════════
-   TYPING INDICATOR
+   TYPING INDICATOR (with elapsed timer)
    ══════════════════════════════════════════════════════════════ */
 
+/** @type {number|null} — Interval ID for the elapsed timer */
+let typingTimerInterval = null;
+
 /**
- * Shows a CSS-animated "typing" indicator in the chat area.
+ * Shows a CSS-animated "typing" indicator with a live elapsed timer.
  * @returns {HTMLElement} — The indicator element (to remove later)
  */
 function showTypingIndicator() {
@@ -169,19 +212,29 @@ function showTypingIndicator() {
   DOM.chatMessages.appendChild(indicator);
   scrollToBottom();
 
-  /* Update status text */
+  /* Start elapsed timer in the status bar */
+  let elapsed = 0;
   DOM.statusText.textContent = 'Thinking...';
+
+  typingTimerInterval = setInterval(() => {
+    elapsed++;
+    DOM.statusText.textContent = `Thinking... ${formatElapsed(elapsed)}`;
+  }, 1000);
 
   return indicator;
 }
 
 /**
- * Removes the typing indicator from the chat area.
+ * Removes the typing indicator and stops the elapsed timer.
  * @param {HTMLElement} indicator
  */
 function removeTypingIndicator(indicator) {
   if (indicator && indicator.parentNode) {
     indicator.parentNode.removeChild(indicator);
+  }
+  if (typingTimerInterval) {
+    clearInterval(typingTimerInterval);
+    typingTimerInterval = null;
   }
   DOM.statusText.textContent = 'Online';
 }
@@ -189,36 +242,152 @@ function removeTypingIndicator(indicator) {
 
 /* ══════════════════════════════════════════════════════════════
    BACKEND COMMUNICATION
+   ══════════════════════════════════════════════════════════════
+
+   Strategy:
+     1. Primary: Try to read the response as a ReadableStream
+        (for SSE / chunked transfer). Render words live.
+     2. Fallback: If the response is not streamed (or the
+        content-type isn't text/event-stream), read the full
+        JSON body and render at once.
+     3. AbortController: 10-minute hard timeout so the fetch
+        never hangs indefinitely, but slow ARM inference isn't
+        killed prematurely.
    ══════════════════════════════════════════════════════════════ */
 
 /**
- * Sends the user's message to the n8n webhook and returns the reply.
+ * Sends the user's message and handles the response.
+ * This function manages its own typing indicator and message
+ * rendering to support both streamed and non-streamed responses.
  *
  * @param {string} userMessage — The user's message text
- * @returns {Promise<string>} — The bot's reply text
  */
-async function fetchBotReply(userMessage) {
+async function fetchAndRenderReply(userMessage) {
+  const typingEl = showTypingIndicator();
+  const controller = new AbortController();
+
+  /* 10-minute hard timeout */
+  const timeoutId = setTimeout(() => controller.abort(), CONFIG.fetchTimeoutMs);
+
   try {
     const response = await fetch(CONFIG.webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sessionId: currentSessionId, // <-- The unique ID is now sent!
-        message: userMessage         // <-- The chat text
+        sessionId: currentSessionId,
+        message: userMessage,
       }),
+      signal: controller.signal,
     });
 
+    clearTimeout(timeoutId);
+
+    /* ── Real HTTP errors (4xx / 5xx) ──────────────────────── */
     if (!response.ok) {
-      throw new Error(`Server responded with ${response.status}`);
+      removeTypingIndicator(typingEl);
+      const statusMsg = response.status === 404
+        ? 'The webhook endpoint was not found (404). Please check the URL.'
+        : response.status >= 500
+          ? `Server error (${response.status}). The backend may be overloaded — try again in a moment.`
+          : `Unexpected error (${response.status}).`;
+      appendMessage('bot', `⚠️ ${statusMsg}`);
+      return;
     }
 
-    const data = await response.json();
+    /* ── Determine response type ────────────────────────────── */
+    const contentType = response.headers.get('content-type') || '';
+    const isStream = contentType.includes('text/event-stream')
+      || contentType.includes('text/plain')
+      || contentType.includes('application/octet-stream');
 
-    return data.reply || data.output || data.response || data.text || 'I received your message, but got an unexpected response format.';
+    /*
+     * ╔═══════════════════════════════════════════════════════╗
+     * ║  PATH A — STREAMING (SSE / chunked text)             ║
+     * ╚═══════════════════════════════════════════════════════╝
+     */
+    if (isStream && response.body) {
+      removeTypingIndicator(typingEl);
+      const { bubbleEl } = createStreamingBotMessage();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+
+        /*
+         * SSE format: each event is "data: <text>\n\n"
+         * We parse each line, strip the "data: " prefix,
+         * and skip control events like [DONE].
+         */
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+          let text = line;
+
+          /* Strip SSE prefix if present */
+          if (text.startsWith('data: ')) {
+            text = text.slice(6);
+          }
+
+          /* Skip empty lines and control signals */
+          if (!text || text === '[DONE]' || text.trim() === '') continue;
+
+          /* Try to parse JSON tokens (common format) */
+          try {
+            const parsed = JSON.parse(text);
+            text = parsed.token || parsed.content || parsed.text || parsed.delta?.content || text;
+          } catch {
+            /* Not JSON — use raw text as-is */
+          }
+
+          fullText += text;
+          bubbleEl.textContent = fullText;
+          scrollToBottom();
+        }
+      }
+
+      /* If stream was empty, show a fallback */
+      if (!fullText.trim()) {
+        bubbleEl.textContent = 'Received an empty response. Please try again.';
+      }
+      return;
+    }
+
+    /*
+     * ╔═══════════════════════════════════════════════════════╗
+     * ║  PATH B — STANDARD JSON (non-streamed)               ║
+     * ╚═══════════════════════════════════════════════════════╝
+     */
+    const data = await response.json();
+    removeTypingIndicator(typingEl);
+
+    const reply = data.reply
+      || data.output
+      || data.response
+      || data.text
+      || (typeof data === 'string' ? data : null)
+      || 'I received your message, but got an unexpected response format.';
+
+    appendMessage('bot', reply);
 
   } catch (error) {
-    console.error('[Bublo] Fetch error:', error);
-    return `👋 Hey there! I'm Bublo, your agentic AI assistant. My backend is being configured right now — once live, I'll be able to reason through complex tasks, write code, brainstorm ideas, and much more.\n\nHang tight — exciting capabilities are on the way!`;
+    clearTimeout(timeoutId);
+    removeTypingIndicator(typingEl);
+
+    /* ── Distinguish abort (timeout) from network errors ──── */
+    if (error.name === 'AbortError') {
+      appendMessage('bot',
+        '⏱️ The request timed out after 20 minutes. The server might be under heavy load — please try again.'
+      );
+    } else {
+      console.error('[Bublo] Fetch error:', error);
+      appendMessage('bot',
+        '⚠️ Could not reach Bublo\'s backend. Please check your internet connection and try again.'
+      );
+    }
   }
 }
 
@@ -231,7 +400,11 @@ async function fetchBotReply(userMessage) {
 let isSending = false;
 
 /**
- * Main send handler
+ * Main send handler:
+ *  1. Reads & trims input
+ *  2. Appends user message
+ *  3. Calls fetchAndRenderReply (handles typing + response)
+ *  4. Cleans up
  */
 async function handleSend() {
   const text = DOM.chatInput.value.trim();
@@ -249,17 +422,10 @@ async function handleSend() {
   /* 2. Append user message */
   appendMessage('user', text);
 
-  /* 3. Show typing indicator */
-  const typingEl = showTypingIndicator();
+  /* 3. Fetch & render reply (streaming or standard) */
+  await fetchAndRenderReply(text);
 
-  /* 4. Fetch reply from backend */
-  const reply = await fetchBotReply(text);
-
-  /* 5. Remove indicator, append reply */
-  removeTypingIndicator(typingEl);
-  appendMessage('bot', reply);
-
-  /* 6. Re-enable */
+  /* 4. Re-enable */
   isSending = false;
   updateSendBtnState();
   DOM.chatInput.focus();
@@ -270,23 +436,16 @@ async function handleSend() {
    INPUT HANDLING
    ══════════════════════════════════════════════════════════════ */
 
-/**
- * Enables/disables the send button based on input content.
- */
 function updateSendBtnState() {
   DOM.sendBtn.disabled = DOM.chatInput.value.trim().length === 0;
 }
 
-/**
- * Auto-resizes the textarea to fit its content (up to max height).
- */
 function autoResizeInput() {
   DOM.chatInput.style.height = 'auto';
   DOM.chatInput.style.height =
     Math.min(DOM.chatInput.scrollHeight, CONFIG.maxInputHeight) + 'px';
 }
 
-/* ── Input event listeners ────────────────────────────────── */
 DOM.chatInput.addEventListener('input', () => {
   updateSendBtnState();
   autoResizeInput();
@@ -300,7 +459,6 @@ DOM.chatInput.addEventListener('keydown', (e) => {
   }
 });
 
-/* Send button click */
 DOM.sendBtn.addEventListener('click', handleSend);
 
 
@@ -328,11 +486,8 @@ document.querySelectorAll('.suggestion-chip').forEach((chip) => {
  * Clear Chat — Removes all messages and shows welcome screen.
  */
 DOM.clearBtn.addEventListener('click', () => {
-  /* Remove all message elements and typing indicators */
   const messages = DOM.chatMessages.querySelectorAll('.message, .typing-indicator');
   messages.forEach((msg) => msg.remove());
-
-  /* Show welcome screen again */
   showWelcomeScreen();
 });
 
@@ -340,7 +495,6 @@ DOM.clearBtn.addEventListener('click', () => {
  * Info Button — Quick info about Bublo.
  */
 DOM.infoBtn.addEventListener('click', () => {
-  /* If already showing info, don't add another */
   if (document.querySelector('[data-info-message]')) return;
 
   hideWelcomeScreen();
@@ -354,16 +508,16 @@ DOM.infoBtn.addEventListener('click', () => {
     <div class="message-content">
       <div class="message-bubble">
         <strong>About Bublo 🤖</strong><br/><br/>
-        I'm an <strong>Agentic AI Assistant</strong> — built to go beyond 
-        simple chat. I use multi-step reasoning, tool integration, and 
-        intelligent workflows to help you think, create, and solve 
+        I'm an <strong>Agentic AI Assistant</strong> — built to go beyond
+        simple chat. I use multi-step reasoning, tool integration, and
+        intelligent workflows to help you think, create, and solve
         problems.<br/><br/>
         <strong>What I can do:</strong><br/>
         • Answer complex questions with reasoning<br/>
         • Write & debug code<br/>
         • Brainstorm and plan ideas<br/>
         • Analyze information & summarize<br/><br/>
-        New agentic tools & knowledge bases are being added regularly. 
+        New agentic tools & knowledge bases are being added regularly.
         This is just the beginning.<br/><br/>
         <em>v1.0 · Created by <a href="https://sumitdabas.in" target="_blank" style="color: hsl(217,91%,55%);">Sumit Dabas</a></em>
       </div>
@@ -380,21 +534,19 @@ DOM.infoBtn.addEventListener('click', () => {
    INITIALIZATION
    ══════════════════════════════════════════════════════════════ */
 
-/**
- * Focus the input on load for immediate typing.
- */
 window.addEventListener('DOMContentLoaded', () => {
   DOM.chatInput.focus();
 });
 
-/**
- * Log a friendly startup message.
- */
 console.log(
-  '%c🤖 Bublo v1.0 — Agentic AI Assistant',
+  '%c🤖 Bublo v1.1 — Agentic AI Assistant (Streaming + Long-poll)',
   'color: hsl(217,91%,55%); font-size: 14px; font-weight: bold;'
 );
 console.log(
-  '%cPowered by agentic workflows · https://chat.sumitdabas.in',
+  '%cSession: ' + currentSessionId,
+  'color: #888; font-size: 11px;'
+);
+console.log(
+  '%cTimeout: ' + (CONFIG.fetchTimeoutMs / 60000) + ' minutes · Powered by agentic workflows',
   'color: #888; font-size: 11px;'
 );
