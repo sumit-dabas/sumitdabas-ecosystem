@@ -8,7 +8,7 @@
  *    ✦  Send/receive messages with animated bubbles
  *    ✦  CSS-only typing indicator with elapsed timer
  *    ✦  Streaming support (SSE / ReadableStream / long-poll)
- *    ✦  20-minute master timeout with auto-retry on network drops
+ *    ✦  No artificial timeout — waits as long as the model needs
  *    ✦  Auto-scroll to latest message
  *    ✦  Auto-resize textarea
  *    ✦  Welcome screen with suggestion chips
@@ -41,29 +41,6 @@ const CONFIG = {
    * 🔌 N8N WEBHOOK ENDPOINT
    */
   webhookUrl: 'https://n8n.sumitdabas.in/webhook/58f54309-8118-4294-8f63-51cd0c9ba873/chat',
-
-  /**
-   * ⏱️  TIMEOUT — 20 minutes (1,200,000ms)
-   * The Qwen 9B model on ARM CPU can take up to 20 minutes
-   * on the very first cold-start call. Subsequent calls are
-   * much faster, but we must not kill the first one.
-   */
-  fetchTimeoutMs: 1_200_000,
-
-  /**
-   * 🔁  RETRY — Handles proxy/Nginx dropping long connections.
-   * When the reverse proxy (Nginx, Cloudflare, etc.) kills
-   * the connection before Ollama finishes, the browser sees a
-   * generic network error. Instead of failing immediately, we
-   * retry transparently up to `maxRetries` times.
-   *
-   * Total maximum wait ≈ fetchTimeoutMs (master timeout spans
-   * all retries). In practice the successful response arrives
-   * on one of the early retries once Ollama finishes processing.
-   */
-  maxRetries: 5,
-  retryBaseDelayMs: 3_000,     // initial delay before first retry (3s)
-  retryBackoffFactor: 1.5,     // multiplier for each subsequent retry
 
   /** Maximum textarea height before scrolling */
   maxInputHeight: 120,
@@ -118,15 +95,6 @@ function formatElapsed(seconds) {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}m ${s}s`;
-}
-
-/**
- * Pauses execution for the given number of milliseconds.
- * @param {number} ms
- * @returns {Promise<void>}
- */
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 
@@ -268,210 +236,126 @@ function removeTypingIndicator(indicator) {
    BACKEND COMMUNICATION
    ══════════════════════════════════════════════════════════════
 
-   Strategy:
-     1. Primary: Try to read the response as a ReadableStream
-        (for SSE / chunked text). Render words live.
-     2. Fallback: If the response is not streamed (or the
-        content-type isn't text/event-stream), read the full
-        JSON body and render at once.
-     3. AbortController: 20-minute master timeout spanning all
-        retry attempts. This ensures slow ARM inference isn't
-        killed prematurely.
-     4. Auto-retry: Network errors (proxy/Nginx dropping the
-        connection) trigger transparent retries with exponential
-        backoff. The typing indicator stays visible throughout.
+   No artificial timeout. The fetch waits as long as the server
+   (Ollama / n8n) needs to generate a response. Nginx proxy
+   timeouts are configured server-side to match.
    ══════════════════════════════════════════════════════════════ */
 
 /**
- * Performs a single fetch attempt to the webhook.
- * Returns the Response on success, or throws on failure.
- *
- * @param {string} userMessage
- * @param {AbortSignal} signal
- * @returns {Promise<Response>}
- */
-async function attemptFetch(userMessage, signal) {
-  const response = await fetch(CONFIG.webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: currentSessionId,
-      message: userMessage,
-    }),
-    signal,
-  });
-  return response;
-}
-
-/**
  * Sends the user's message and handles the response.
- * Automatically retries on network errors (e.g. proxy timeout)
- * up to CONFIG.maxRetries times with exponential backoff.
- * The typing indicator stays visible across all retries.
+ * Waits indefinitely for the server — no timeout, no retry.
  *
  * @param {string} userMessage — The user's message text
  */
 async function fetchAndRenderReply(userMessage) {
   const typingEl = showTypingIndicator();
 
-  /*
-   * Master AbortController — spans ALL retries.
-   * Total wall-clock timeout = fetchTimeoutMs (20 min default).
-   * Individual attempts may fail sooner due to proxy timeouts,
-   * but the overall timer keeps ticking across retries.
-   */
-  const masterController = new AbortController();
-  const masterTimeout = setTimeout(
-    () => masterController.abort(),
-    CONFIG.fetchTimeoutMs,
-  );
+  try {
+    const response = await fetch(CONFIG.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: currentSessionId,
+        message: userMessage,
+      }),
+    });
 
-  let lastError = null;
-  let delay = CONFIG.retryBaseDelayMs;
-
-  for (let attempt = 0; attempt <= CONFIG.maxRetries; attempt++) {
-    /* If the master timeout has already fired, stop retrying */
-    if (masterController.signal.aborted) break;
-
-    try {
-      /* Wait before retry (skip delay on the first attempt) */
-      if (attempt > 0) {
-        console.log(
-          `[Bublo] Retry ${attempt}/${CONFIG.maxRetries} — waiting ${Math.round(delay / 1000)}s before next attempt…`,
-        );
-        DOM.statusText.textContent =
-          `Reconnecting (attempt ${attempt + 1})…`;
-        await sleep(delay);
-        delay = Math.round(delay * CONFIG.retryBackoffFactor);
-      }
-
-      const response = await attemptFetch(
-        userMessage,
-        masterController.signal,
-      );
-
-      /* ── Real HTTP errors (4xx / 5xx) ─────────────────────── */
-      if (!response.ok) {
-        clearTimeout(masterTimeout);
-        removeTypingIndicator(typingEl);
-        const statusMsg = response.status === 404
-          ? 'The webhook endpoint was not found (404). Please check the URL.'
-          : response.status >= 500
-            ? `Server error (${response.status}). The backend may be overloaded — try again in a moment.`
-            : `Unexpected error (${response.status}).`;
-        appendMessage('bot', `⚠️ ${statusMsg}`);
-        return;
-      }
-
-      /* ── Determine response type ──────────────────────────── */
-      const contentType = response.headers.get('content-type') || '';
-      const isStream = contentType.includes('text/event-stream')
-        || contentType.includes('text/plain')
-        || contentType.includes('application/octet-stream');
-
-      /*
-       * ╔═════════════════════════════════════════════════════╗
-       * ║  PATH A — STREAMING (SSE / chunked text)           ║
-       * ╚═════════════════════════════════════════════════════╝
-       */
-      if (isStream && response.body) {
-        clearTimeout(masterTimeout);
-        removeTypingIndicator(typingEl);
-        const { bubbleEl } = createStreamingBotMessage();
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let fullText = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-
-          /*
-           * SSE format: each event is "data: <text>\n\n"
-           * We parse each line, strip the "data: " prefix,
-           * and skip control events like [DONE].
-           */
-          const lines = chunk.split('\n');
-          for (const line of lines) {
-            let text = line;
-
-            /* Strip SSE prefix if present */
-            if (text.startsWith('data: ')) {
-              text = text.slice(6);
-            }
-
-            /* Skip empty lines and control signals */
-            if (!text || text === '[DONE]' || text.trim() === '') continue;
-
-            /* Try to parse JSON tokens (common format) */
-            try {
-              const parsed = JSON.parse(text);
-              text = parsed.token || parsed.content || parsed.text || parsed.delta?.content || text;
-            } catch {
-              /* Not JSON — use raw text as-is */
-            }
-
-            fullText += text;
-            bubbleEl.textContent = fullText;
-            scrollToBottom();
-          }
-        }
-
-        /* If stream was empty, show a fallback */
-        if (!fullText.trim()) {
-          bubbleEl.textContent = 'Received an empty response. Please try again.';
-        }
-        return;
-      }
-
-      /*
-       * ╔═════════════════════════════════════════════════════╗
-       * ║  PATH B — STANDARD JSON (non-streamed)             ║
-       * ╚═════════════════════════════════════════════════════╝
-       */
-      const data = await response.json();
-      clearTimeout(masterTimeout);
+    /* ── HTTP errors (4xx / 5xx) ───────────────────────────── */
+    if (!response.ok) {
       removeTypingIndicator(typingEl);
-
-      const reply = data.reply
-        || data.output
-        || data.response
-        || data.text
-        || (typeof data === 'string' ? data : null)
-        || 'I received your message, but got an unexpected response format.';
-
-      appendMessage('bot', reply);
-      return;  /* ← Success! Exit the retry loop. */
-
-    } catch (error) {
-      lastError = error;
-
-      /* If the user's master timeout fired, don't retry */
-      if (error.name === 'AbortError') break;
-
-      /* Network error — log and continue to next retry */
-      console.warn(
-        `[Bublo] Attempt ${attempt + 1} failed:`,
-        error.message,
-      );
+      const statusMsg = response.status === 404
+        ? 'The webhook endpoint was not found (404). Please check the URL.'
+        : response.status >= 500
+          ? `Server error (${response.status}). The backend may be overloaded — try again in a moment.`
+          : `Unexpected error (${response.status}).`;
+      appendMessage('bot', `⚠️ ${statusMsg}`);
+      return;
     }
-  }
 
-  /* ── All retries exhausted or master timeout fired ─────────── */
-  clearTimeout(masterTimeout);
-  removeTypingIndicator(typingEl);
+    /* ── Determine response type ──────────────────────────── */
+    const contentType = response.headers.get('content-type') || '';
+    const isStream = contentType.includes('text/event-stream')
+      || contentType.includes('text/plain')
+      || contentType.includes('application/octet-stream');
 
-  if (lastError?.name === 'AbortError') {
-    const mins = Math.round(CONFIG.fetchTimeoutMs / 60_000);
+    /*
+     * ╔═════════════════════════════════════════════════════╗
+     * ║  PATH A — STREAMING (SSE / chunked text)           ║
+     * ╚═════════════════════════════════════════════════════╝
+     */
+    if (isStream && response.body) {
+      removeTypingIndicator(typingEl);
+      const { bubbleEl } = createStreamingBotMessage();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+
+        /*
+         * SSE format: each event is "data: <text>\n\n"
+         * We parse each line, strip the "data: " prefix,
+         * and skip control events like [DONE].
+         */
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+          let text = line;
+
+          /* Strip SSE prefix if present */
+          if (text.startsWith('data: ')) {
+            text = text.slice(6);
+          }
+
+          /* Skip empty lines and control signals */
+          if (!text || text === '[DONE]' || text.trim() === '') continue;
+
+          /* Try to parse JSON tokens (common format) */
+          try {
+            const parsed = JSON.parse(text);
+            text = parsed.token || parsed.content || parsed.text || parsed.delta?.content || text;
+          } catch {
+            /* Not JSON — use raw text as-is */
+          }
+
+          fullText += text;
+          bubbleEl.textContent = fullText;
+          scrollToBottom();
+        }
+      }
+
+      /* If stream was empty, show a fallback */
+      if (!fullText.trim()) {
+        bubbleEl.textContent = 'Received an empty response. Please try again.';
+      }
+      return;
+    }
+
+    /*
+     * ╔═════════════════════════════════════════════════════╗
+     * ║  PATH B — STANDARD JSON (non-streamed)             ║
+     * ╚═════════════════════════════════════════════════════╝
+     */
+    const data = await response.json();
+    removeTypingIndicator(typingEl);
+
+    const reply = data.reply
+      || data.output
+      || data.response
+      || data.text
+      || (typeof data === 'string' ? data : null)
+      || 'I received your message, but got an unexpected response format.';
+
+    appendMessage('bot', reply);
+
+  } catch (error) {
+    removeTypingIndicator(typingEl);
+    console.error('[Bublo] Fetch error:', error);
     appendMessage('bot',
-      `⏱️ The request timed out after ${mins} minutes. The server might be under heavy load — please try again.`
-    );
-  } else {
-    console.error('[Bublo] All retries exhausted:', lastError);
-    appendMessage('bot',
-      `⚠️ Could not reach Bublo's backend after ${CONFIG.maxRetries + 1} attempts. Please check your internet connection and try again.`
+      '⚠️ Could not reach Bublo\'s backend. Please check your internet connection and try again.'
     );
   }
 }
@@ -624,14 +508,10 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 console.log(
-  '%c🤖 Bublo v1.2 — Agentic AI Assistant (Streaming + Auto-retry)',
+  '%c🤖 Bublo v1.2 — Agentic AI Assistant (No timeout · Waits for server)',
   'color: hsl(217,91%,55%); font-size: 14px; font-weight: bold;'
 );
 console.log(
   '%cSession: ' + currentSessionId,
-  'color: #888; font-size: 11px;'
-);
-console.log(
-  '%cTimeout: ' + (CONFIG.fetchTimeoutMs / 60000) + ' min · Retries: ' + CONFIG.maxRetries + ' · Powered by agentic workflows',
   'color: #888; font-size: 11px;'
 );
