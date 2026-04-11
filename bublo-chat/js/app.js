@@ -245,10 +245,16 @@ function removeTypingIndicator(indicator) {
  * Sends the user's message and handles the response.
  * Waits indefinitely for the server — no timeout, no retry.
  *
+ * The AbortController below is NOT for timeout — it exists solely
+ * to prevent the browser from silently retrying the POST request
+ * if Nginx resets the TCP connection. On any error we call
+ * controller.abort() which kills any pending browser-level retry.
+ *
  * @param {string} userMessage — The user's message text
  */
 async function fetchAndRenderReply(userMessage) {
   const typingEl = showTypingIndicator();
+  const controller = new AbortController();
 
   try {
     const response = await fetch(CONFIG.webhookUrl, {
@@ -258,6 +264,7 @@ async function fetchAndRenderReply(userMessage) {
         sessionId: currentSessionId,
         message: userMessage,
       }),
+      signal: controller.signal,
     });
 
     /* ── HTTP errors (4xx / 5xx) ───────────────────────────── */
@@ -352,6 +359,7 @@ async function fetchAndRenderReply(userMessage) {
     appendMessage('bot', reply);
 
   } catch (error) {
+    controller.abort();   // kill any browser-level retry
     removeTypingIndicator(typingEl);
     console.error('[Bublo] Fetch error:', error);
     appendMessage('bot',
