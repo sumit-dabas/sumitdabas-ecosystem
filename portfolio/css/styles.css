@@ -702,6 +702,13 @@ img { display: block; max-width: 100%; }
   border: 1px solid hsla(217,91%,60%,.12);
 }
 
+.project-btn {
+  margin-top: var(--sp-lg);
+  padding: .65rem 1.4rem;
+  font-size: var(--fs-xs);
+  width: fit-content;
+}
+
 /* ── Contact Section ──────────────────────────────────────── */
 .contact-grid {
   display: grid;
