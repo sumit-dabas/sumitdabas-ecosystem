@@ -703,10 +703,11 @@ img { display: block; max-width: 100%; }
 }
 
 .project-btn {
-  margin-top: var(--sp-lg);
-  padding: .65rem 1.4rem;
-  font-size: var(--fs-xs);
+  margin-top: var(--sp-md);
+  padding: .45rem 1rem;
+  font-size: .7rem;
   width: fit-content;
+  letter-spacing: .02em;
 }
 
 /* ── Contact Section ──────────────────────────────────────── */
