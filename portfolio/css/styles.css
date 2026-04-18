@@ -404,6 +404,12 @@ img { display: block; max-width: 100%; }
 
 .btn:hover .btn-icon { transform: translateX(3px); }
 
+.btn-sm {
+  padding: .55rem 1.2rem;
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-md);
+}
+
 /* ── Section Styling ──────────────────────────────────────── */
 .section {
   padding: var(--sp-4xl) 0;

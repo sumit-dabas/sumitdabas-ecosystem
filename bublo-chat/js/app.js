@@ -245,10 +245,11 @@ function removeTypingIndicator(indicator) {
  * Sends the user's message and handles the response.
  * Waits indefinitely for the server — no timeout, no retry.
  *
- * The AbortController below is NOT for timeout — it exists solely
- * to prevent the browser from silently retrying the POST request
- * if Nginx resets the TCP connection. On any error we call
- * controller.abort() which kills any pending browser-level retry.
+ * The request body is wrapped in a ReadableStream so the browser
+ * CANNOT silently retry this POST when a proxy (e.g. Cloudflare)
+ * drops the TCP connection. A consumed stream cannot be replayed,
+ * forcing Chrome to surface the error instead of transparently
+ * creating a duplicate request.
  *
  * @param {string} userMessage — The user's message text
  */
@@ -257,13 +258,28 @@ async function fetchAndRenderReply(userMessage) {
   const controller = new AbortController();
 
   try {
+    const bodyJson = JSON.stringify({
+      sessionId: currentSessionId,
+      message: userMessage,
+    });
+
+    /*
+     * Wrap body in a ReadableStream — once consumed by the first
+     * send, Chrome cannot replay it, so no silent retry is possible.
+     */
+    const bodyBytes = new TextEncoder().encode(bodyJson);
+    const bodyStream = new ReadableStream({
+      start(c) {
+        c.enqueue(bodyBytes);
+        c.close();
+      },
+    });
+
     const response = await fetch(CONFIG.webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId: currentSessionId,
-        message: userMessage,
-      }),
+      body: bodyStream,
+      duplex: 'half',
       signal: controller.signal,
     });
 
